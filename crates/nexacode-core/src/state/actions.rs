@@ -154,6 +154,8 @@ pub enum MessageAction {
     EditMessage { index: usize, content: String },
     /// Edit a message by ID
     EditMessageById { id: String, content: String },
+    /// Append content to the last message (for streaming)
+    AppendToLastMessage(String),
 }
 
 /// Actions related to input handling

@@ -52,6 +52,8 @@ pub struct OpenAIRequest {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<OpenAITool>,
 }
@@ -113,6 +115,24 @@ pub struct OpenAIToolCallFunction {
     pub arguments: String,
 }
 
+/// OpenAI streaming response
+#[derive(Debug, Deserialize)]
+pub struct OpenAIStreamResponse {
+    pub choices: Vec<OpenAIStreamChoice>,
+}
+
+/// OpenAI streaming choice
+#[derive(Debug, Deserialize)]
+pub struct OpenAIStreamChoice {
+    pub delta: Option<OpenAIDelta>,
+}
+
+/// OpenAI streaming delta
+#[derive(Debug, Deserialize)]
+pub struct OpenAIDelta {
+    pub content: Option<String>,
+}
+
 /// Anthropic API request format
 #[derive(Debug, Serialize)]
 pub struct AnthropicRequest {
@@ -122,6 +142,8 @@ pub struct AnthropicRequest {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
 }
 
 /// Anthropic message format
@@ -142,5 +164,21 @@ pub struct AnthropicResponse {
 pub struct AnthropicContent {
     #[serde(rename = "type")]
     pub content_type: String,
+    pub text: Option<String>,
+}
+
+/// Anthropic streaming event
+#[derive(Debug, Deserialize)]
+pub struct AnthropicStreamEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub delta: Option<AnthropicStreamDelta>,
+}
+
+/// Anthropic streaming delta
+#[derive(Debug, Deserialize)]
+pub struct AnthropicStreamDelta {
+    #[serde(rename = "type")]
+    pub delta_type: String,
     pub text: Option<String>,
 }

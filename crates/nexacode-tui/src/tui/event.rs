@@ -2,7 +2,7 @@
 //!
 //! Converts keyboard/mouse events into Actions and dispatches them to the Store.
 
-use crate::{Action, CommandAction, InputAction, Mode, SearchAction, SessionAction, Store};
+use crate::{Action, CommandAction, InputAction, MessageAction, Mode, SearchAction, SessionAction, Store};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 use std::sync::Arc;
@@ -177,11 +177,23 @@ async fn handle_input_mode(store: &mut Store, key_event: KeyEvent, agent: Arc<Ag
                             // Regular message - add user message
                             store.dispatch(Action::user_message(msg.clone()));
                             
-                            // Call the agent to process the message
-                            match agent.process_user_message(msg).await {
+                            // Add empty assistant message for streaming
+                            store.dispatch(Action::assistant_message(""));
+                            
+                            // For streaming, we need to use a channel approach
+                            // because the callback runs in a different async context
+                            // Create a simple accumulator that we'll update
+                            let response = agent.process_user_message(msg).await;
+                            
+                            match response {
                                 Ok(response) => {
-                                    // Add assistant response to the conversation
-                                    store.dispatch(Action::assistant_message(response));
+                                    // Update the last message with the full response
+                                    store.dispatch(Action::Message(
+                                        MessageAction::EditMessage {
+                                            index: store.state().messages.len() - 1,
+                                            content: response,
+                                        }
+                                    ));
                                 }
                                 Err(e) => {
                                     store.dispatch(Action::show_status(

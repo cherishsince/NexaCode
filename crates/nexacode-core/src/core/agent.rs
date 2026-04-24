@@ -11,6 +11,7 @@ use crate::{Message, MessageRole, Store};
 use crate::infra::llm::config::LlmConfig;
 use crate::infra::llm::trait_def::{HttpLlmClient, LlmClient};
 use crate::infra::llm::types::{LlmRequest, LlmResponse};
+use crate::infra::llm::StreamCallback;
 use super::context::{ContextManager, ContextConfig, MessagePriority};
 
 // ============================================================================
@@ -229,6 +230,31 @@ impl AgentController {
         self.reasoning_loop().await
     }
 
+    /// Process a user message with streaming callback
+    /// Returns the assistant's response text
+    pub async fn process_user_message_stream(
+        &self, 
+        content: String, 
+        on_chunk: StreamCallback
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        info!("Processing user message with streaming: {}", content);
+        
+        // Create user message
+        let user_message = Message::new(MessageRole::User, content.clone());
+        
+        // Add to context with normal priority
+        {
+            let mut ctx = self.context.lock().await;
+            ctx.add_message(user_message.clone());
+        }
+        
+        // Emit user message event
+        self.emit(AgentEvent::UserMessage(content.clone())).await;
+        
+        // Run the reasoning loop with streaming and return the response
+        self.reasoning_loop_stream(on_chunk).await
+    }
+
     /// Core reasoning loop
     /// Returns the final assistant response
     async fn reasoning_loop(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -302,6 +328,35 @@ impl AgentController {
         }
     }
 
+    /// Core reasoning loop with streaming
+    /// Returns the final assistant response
+    async fn reasoning_loop_stream(&self, on_chunk: StreamCallback) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        // Check context budget
+        {
+            let ctx = self.context.lock().await;
+            if !ctx.is_within_budget() {
+                warn!("Context budget exceeded, pruning should have occurred");
+            }
+        }
+
+        // Set state to thinking
+        self.set_state(AgentStateEnum::Thinking).await;
+        
+        // Call LLM with streaming
+        let text = self.call_llm_stream(on_chunk).await?;
+        
+        // Add assistant message to context
+        let assistant_message = Message::new(MessageRole::Assistant, text.clone());
+        {
+            let mut ctx = self.context.lock().await;
+            ctx.add_message(assistant_message);
+        }
+        
+        // Done, return to idle
+        self.set_state(AgentStateEnum::Idle).await;
+        Ok(text)
+    }
+
     /// Call the LLM
     async fn call_llm(&self) -> Result<LlmResponse, Box<dyn std::error::Error + Send + Sync>> {
         // Get messages for LLM from ContextManager
@@ -324,6 +379,30 @@ impl AgentController {
         
         // Use the LLM client to make the actual API call
         self.llm_client.call(request).await.map_err(|e| e.into())
+    }
+
+    /// Call the LLM with streaming
+    async fn call_llm_stream(&self, on_chunk: StreamCallback) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        // Get messages for LLM from ContextManager
+        let messages = {
+            let ctx = self.context.lock().await;
+            ctx.get_messages_for_llm()
+        };
+        
+        // Build request based on provider
+        let request = LlmRequest {
+            provider_name: self.config.current_provider_name().to_string(),
+            model: self.config.current_model(),
+            messages,
+            max_tokens: self.config.max_tokens,
+            temperature: Some(self.config.temperature),
+            tools: Vec::new(), // Simplified for streaming
+        };
+        
+        debug!("Calling {} LLM with streaming, model: {}", request.provider_name, request.model);
+        
+        // Use the LLM client to make the streaming API call
+        self.llm_client.call_stream(request, on_chunk).await.map_err(|e| e.into())
     }
 
     /// Stream response to the user

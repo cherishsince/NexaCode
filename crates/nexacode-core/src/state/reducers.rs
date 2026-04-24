@@ -390,6 +390,14 @@ fn reduce_message(mut state: State, action: &MessageAction) -> State {
             state.current_session.touch();
             state.sync_messages();
         }
+        MessageAction::AppendToLastMessage(content) => {
+            if let Some(last_msg) = state.current_session.messages.last_mut() {
+                last_msg.content.push_str(content);
+                last_msg.timestamp = now_timestamp();
+            }
+            state.current_session.touch();
+            state.sync_messages();
+        }
     }
     state
 }

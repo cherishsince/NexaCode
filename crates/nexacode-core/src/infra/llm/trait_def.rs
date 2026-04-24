@@ -2,16 +2,27 @@
 
 use anyhow::{Context, Result};
 use reqwest::Client;
+use tokio_stream::StreamExt;
 use tracing::{debug, info};
 
 use super::types::*;
 use super::config::{LlmConfig, ProviderType};
 
+/// Callback type for streaming responses
+pub type StreamCallback = Box<dyn Fn(&str) + Send + Sync>;
+
 /// LLM Client trait
 #[async_trait::async_trait]
 pub trait LlmClient: Send + Sync {
-    /// Call the LLM with a request
+    /// Call the LLM with a request (non-streaming)
     async fn call(&self, request: LlmRequest) -> Result<LlmResponse>;
+    
+    /// Call the LLM with streaming response
+    async fn call_stream(
+        &self,
+        request: LlmRequest,
+        on_chunk: StreamCallback,
+    ) -> Result<String>;
 }
 
 /// HTTP-based LLM client
@@ -26,7 +37,7 @@ impl HttpLlmClient {
         Self {
             config,
             http_client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
+                .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .expect("Failed to create HTTP client"),
         }
@@ -37,7 +48,85 @@ impl HttpLlmClient {
         self.config.provider_type()
     }
 
-    /// Call OpenAI-compatible API
+    /// Call OpenAI-compatible API with streaming
+    async fn call_openai_stream(
+        &self,
+        request: LlmRequest,
+        base_url: &str,
+        api_key: &str,
+        on_chunk: StreamCallback,
+    ) -> Result<String> {
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        
+        debug!("Calling OpenAI-compatible API with streaming: {}", url);
+        
+        // Build OpenAI request with streaming enabled
+        let openai_request = OpenAIRequest {
+            model: request.model.clone(),
+            messages: request.messages.iter().map(|m| OpenAIMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            }).collect(),
+            max_tokens: Some(request.max_tokens),
+            temperature: request.temperature,
+            stream: Some(true),
+            tools: Vec::new(), // Simplified for streaming
+        };
+
+        let response = self.http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&openai_request)
+            .send()
+            .await
+            .context("Failed to send request to LLM API")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("LLM API error: {} - {}", status, body);
+        }
+
+        // Process SSE stream
+        let mut full_content = String::new();
+        let mut stream = response.bytes_stream();
+        
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.context("Failed to read stream chunk")?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            
+            // Parse SSE data
+            for line in chunk_str.lines() {
+                if line.starts_with("data: ") {
+                    let data = &line[6..];
+                    if data == "[DONE]" {
+                        continue;
+                    }
+                    
+                    // Parse the JSON
+                    if let Ok(stream_response) = serde_json::from_str::<OpenAIStreamResponse>(data) {
+                        if let Some(choice) = stream_response.choices.first() {
+                            if let Some(delta) = &choice.delta {
+                                if let Some(content) = &delta.content {
+                                    on_chunk(content);
+                                    full_content.push_str(content);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if full_content.is_empty() {
+            anyhow::bail!("No content received from streaming response");
+        }
+
+        Ok(full_content)
+    }
+
+    /// Call OpenAI-compatible API (non-streaming)
     async fn call_openai_compatible(
         &self,
         request: LlmRequest,
@@ -57,6 +146,7 @@ impl HttpLlmClient {
             }).collect(),
             max_tokens: Some(request.max_tokens),
             temperature: request.temperature,
+            stream: None,
             tools: request.tools.iter().map(|t| OpenAITool {
                 tool_type: "function".to_string(),
                 function: OpenAIFunction {
@@ -109,7 +199,96 @@ impl HttpLlmClient {
         }
     }
 
-    /// Call Anthropic API
+    /// Call Anthropic API with streaming
+    async fn call_anthropic_stream(
+        &self,
+        request: LlmRequest,
+        base_url: &str,
+        api_key: &str,
+        on_chunk: StreamCallback,
+    ) -> Result<String> {
+        let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
+        
+        debug!("Calling Anthropic API with streaming: {}", url);
+        
+        // Separate system message from other messages
+        let mut system_prompt = None;
+        let messages: Vec<AnthropicMessage> = request.messages.iter()
+            .filter_map(|m| {
+                if m.role == "system" {
+                    system_prompt = Some(m.content.clone());
+                    None
+                } else {
+                    Some(AnthropicMessage {
+                        role: m.role.clone(),
+                        content: m.content.clone(),
+                    })
+                }
+            })
+            .collect();
+
+        let anthropic_request = AnthropicRequest {
+            model: request.model.clone(),
+            messages,
+            max_tokens: Some(request.max_tokens),
+            system: system_prompt,
+            stream: Some(true),
+        };
+
+        let response = self.http_client
+            .post(&url)
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&anthropic_request)
+            .send()
+            .await
+            .context("Failed to send request to Anthropic API")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Anthropic API error: {} - {}", status, body);
+        }
+
+        // Process SSE stream
+        let mut full_content = String::new();
+        let mut stream = response.bytes_stream();
+        
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.context("Failed to read stream chunk")?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            
+            // Parse SSE data
+            for line in chunk_str.lines() {
+                if line.starts_with("data: ") {
+                    let data = &line[6..];
+                    
+                    // Parse the JSON
+                    if let Ok(event) = serde_json::from_str::<AnthropicStreamEvent>(data) {
+                        if event.event_type == "content_block_delta" {
+                            if let Some(delta) = event.delta {
+                                if delta.delta_type == "text_delta" {
+                                    if let Some(text) = delta.text {
+                                        on_chunk(&text);
+                                        full_content.push_str(&text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if full_content.is_empty() {
+            anyhow::bail!("No content received from streaming response");
+        }
+
+        Ok(full_content)
+    }
+
+    /// Call Anthropic API (non-streaming)
     async fn call_anthropic(
         &self,
         request: LlmRequest,
@@ -141,6 +320,7 @@ impl HttpLlmClient {
             messages,
             max_tokens: Some(request.max_tokens),
             system: system_prompt,
+            stream: None,
         };
 
         let response = self.http_client
@@ -203,6 +383,31 @@ impl LlmClient for HttpLlmClient {
             }
             ProviderType::OpenAI => {
                 self.call_openai_compatible(request, &base_url, &api_key).await
+            }
+        }
+    }
+
+    async fn call_stream(
+        &self,
+        request: LlmRequest,
+        on_chunk: StreamCallback,
+    ) -> Result<String> {
+        let provider_type = self.provider_type();
+        let base_url = self.config.current_base_url();
+        let api_key = self.config.current_api_key();
+
+        if api_key.is_empty() {
+            anyhow::bail!("No API key configured for provider: {}", self.config.current_provider_name());
+        }
+
+        info!("Calling LLM with streaming: provider={}, model={}", self.config.current_provider_name(), request.model);
+
+        match provider_type {
+            ProviderType::Anthropic => {
+                self.call_anthropic_stream(request, &base_url, &api_key, on_chunk).await
+            }
+            ProviderType::OpenAI => {
+                self.call_openai_stream(request, &base_url, &api_key, on_chunk).await
             }
         }
     }
