@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "nexacode=info".into())
+                .unwrap_or_else(|_| "nexacode=debug".into())
         )
         .with(tracing_subscriber::fmt::layer()
             .with_writer(non_blocking)
@@ -128,28 +128,46 @@ async fn run_app(
     use std::time::Duration;
     
     while !store.state().should_quit {
-        // Draw UI
-        terminal.draw(|f| render(f, f.size(), store.state()))?;
-        
-        // Check for stream messages first (non-blocking)
-        let mut stream_msg_count = 0;
-        while let Ok(msg) = stream_rx.try_recv() {
+        // Check for stream messages first (non-blocking) - process one at a time for smoother display
+        if let Ok(msg) = stream_rx.try_recv() {
             use nexacode_core::{Action, MessageAction};
-            stream_msg_count += 1;
             match msg {
                 StreamMessage::Chunk(chunk) => {
-                    tracing::debug!("Received stream chunk #{}: {} chars", stream_msg_count, chunk.len());
+                    tracing::debug!("Received stream chunk: {} chars", chunk.len());
                     store.dispatch(Action::Message(MessageAction::AppendToLastMessage(chunk)));
                 }
                 StreamMessage::Complete => {
-                    tracing::info!("Stream complete, total {} messages received", stream_msg_count);
+                    tracing::info!("Stream complete");
                 }
                 StreamMessage::Error(err) => {
                     tracing::error!("Stream error: {}", err);
                     store.dispatch(Action::show_status(err, true));
                 }
             }
+            
+            // Immediately draw after receiving a chunk for real-time display
+            terminal.draw(|f| render(f, f.size(), store.state()))?;
+            
+            // Drain any remaining chunks to avoid backlog, but draw after each
+            while let Ok(msg) = stream_rx.try_recv() {
+                match msg {
+                    StreamMessage::Chunk(chunk) => {
+                        store.dispatch(Action::Message(MessageAction::AppendToLastMessage(chunk)));
+                        terminal.draw(|f| render(f, f.size(), store.state()))?;
+                    }
+                    StreamMessage::Complete => {
+                        tracing::info!("Stream complete");
+                    }
+                    StreamMessage::Error(err) => {
+                        tracing::error!("Stream error: {}", err);
+                        store.dispatch(Action::show_status(err, true));
+                    }
+                }
+            }
         }
+        
+        // Draw UI
+        terminal.draw(|f| render(f, f.size(), store.state()))?;
         
         // Poll for terminal events with a short timeout
         if event::poll(Duration::from_millis(16))? {

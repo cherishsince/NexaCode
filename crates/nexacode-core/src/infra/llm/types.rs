@@ -131,6 +131,9 @@ pub struct OpenAIStreamChoice {
 #[derive(Debug, Deserialize)]
 pub struct OpenAIDelta {
     pub content: Option<String>,
+    /// Some providers (like Huawei/GLM) use reasoning_content for chain-of-thought
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
 }
 
 /// Anthropic API request format

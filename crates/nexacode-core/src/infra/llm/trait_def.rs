@@ -92,6 +92,7 @@ impl HttpLlmClient {
         let mut full_content = String::new();
         let mut stream = response.bytes_stream();
         let mut chunk_count = 0;
+        let mut buffer = String::new(); // Buffer for incomplete lines
         
         info!("Starting to process SSE stream");
         
@@ -102,8 +103,19 @@ impl HttpLlmClient {
             
             debug!("Received chunk {}: {} bytes", chunk_count, chunk.len());
             
-            // Parse SSE data
-            for line in chunk_str.lines() {
+            // Add to buffer
+            buffer.push_str(&chunk_str);
+            
+            // Debug: log first few chunks to see raw data
+            if chunk_count <= 3 {
+                debug!("Raw chunk {} content: {}", chunk_count, &chunk_str.chars().take(500).collect::<String>());
+            }
+            
+            // Process complete lines from buffer
+            while let Some(newline_pos) = buffer.find('\n') {
+                let line = buffer[..newline_pos].trim().to_string();
+                buffer = buffer[newline_pos + 1..].to_string();
+                
                 if line.starts_with("data: ") {
                     let data = &line[6..];
                     if data == "[DONE]" {
@@ -116,7 +128,15 @@ impl HttpLlmClient {
                         Ok(stream_response) => {
                             if let Some(choice) = stream_response.choices.first() {
                                 if let Some(delta) = &choice.delta {
-                                    if let Some(content) = &delta.content {
+                                    // Handle both content and reasoning_content
+                                    // Some providers like Huawei/GLM use reasoning_content for chain-of-thought
+                                    // Priority: non-empty content > non-empty reasoning_content
+                                    let content_to_send = delta.content.as_ref()
+                                        .filter(|c| !c.is_empty())
+                                        .or_else(|| delta.reasoning_content.as_ref()
+                                            .filter(|c| !c.is_empty()));
+                                    
+                                    if let Some(content) = content_to_send {
                                         debug!("Sending chunk: {} chars", content.len());
                                         on_chunk(content);
                                         full_content.push_str(content);
