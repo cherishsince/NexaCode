@@ -1,4 +1,5 @@
-//! 视图模块
+//! View modules
+
 pub mod chat;
 
 pub use self::chat::render;

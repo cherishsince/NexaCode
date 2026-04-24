@@ -1,4 +1,4 @@
-//! TUI (Terminal UI) 层
+//! TUI (Terminal UI) layer
 
 pub mod components;
 pub mod theme;

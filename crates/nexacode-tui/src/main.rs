@@ -7,7 +7,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
-use nexacode_tui::{App, handle_event, render};
+use nexacode_tui::{handle_event, render, Store};
 use ratatui::prelude::*;
 use std::io::{self, Stdout};
 use tracing::info;
@@ -26,11 +26,11 @@ fn main() -> Result<()> {
     // Setup terminal
     let mut terminal = setup_terminal()?;
 
-    // Create app state
-    let mut app = App::new();
+    // Create state store
+    let mut store = Store::new();
 
     // Run the app
-    let result = run_app(&mut terminal, &mut app);
+    let result = run_app(&mut terminal, &mut store);
 
     // Restore terminal
     restore_terminal(&mut terminal)?;
@@ -59,10 +59,10 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     Ok(())
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
-    while !app.should_quit {
-        terminal.draw(|f| render(f, f.size(), app))?;
-        pollster::block_on(handle_event(app))?;
+fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, store: &mut Store) -> Result<()> {
+    while !store.state().should_quit {
+        terminal.draw(|f| render(f, f.size(), store.state()))?;
+        pollster::block_on(handle_event(store))?;
     }
 
     Ok(())

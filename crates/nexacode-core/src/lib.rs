@@ -13,6 +13,14 @@ pub mod skills;
 pub mod mcp;
 pub mod infra;
 
-// Re-export commonly used types
+// Re-export commonly used types from core
 pub use self::core::{agent, task_engine, planning, command};
-pub use self::state::{actions, reducers, history};
+
+// State management - re-export from submodules
+pub use self::state::actions::{
+    Action, AgentState, CommandAction, FocusTarget, InputAction, Message, MessageAction,
+    MessageRole, Mode, NavigationAction, SearchAction, SessionAction, Timestamp, UiAction,
+};
+pub use self::state::reducers::{SearchMatch, Session, State, Theme};
+pub use self::state::history::History;
+pub use self::state::store::{Store, Subscriber, SubscriberId};

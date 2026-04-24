@@ -1,4 +1,6 @@
-//! 主题系统
+//! Theme system
+
+use nexacode_core::Theme as CoreTheme;
 use ratatui::style::{Color, Style, Stylize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +12,15 @@ pub enum Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self::Light
+    }
+}
+
+impl From<CoreTheme> for Theme {
+    fn from(theme: CoreTheme) -> Self {
+        match theme {
+            CoreTheme::Dark => Theme::Dark,
+            CoreTheme::Light => Theme::Light,
+        }
     }
 }
 
