@@ -15,7 +15,8 @@ use std::io::{self, Stdout};
 use std::sync::Arc;
 use tracing::info;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -40,7 +41,7 @@ fn main() -> Result<()> {
     let mut store = Store::new();
 
     // Run the app
-    let result = run_app(&mut terminal, &mut store, agent);
+    let result = run_app(&mut terminal, &mut store, agent).await;
 
     // Restore terminal
     restore_terminal(&mut terminal)?;
@@ -87,10 +88,10 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     Ok(())
 }
 
-fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, store: &mut Store, agent: Arc<AgentController>) -> Result<()> {
+async fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, store: &mut Store, agent: Arc<AgentController>) -> Result<()> {
     while !store.state().should_quit {
         terminal.draw(|f| render(f, f.size(), store.state()))?;
-        pollster::block_on(handle_event(store, agent.clone()))?;
+        handle_event(store, agent.clone()).await?;
     }
 
     Ok(())
